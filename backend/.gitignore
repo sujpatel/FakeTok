@@ -1,0 +1,26 @@
+# Virtual environment folders
+venv/
+.venv/
+ENV/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.so
+
+# Environment variables
+.env
+
+# Logs and database artifacts
+*.log
+*.sqlite3
+instance/
+
+# Editor/IDE files
+.vscode/
+.idea/
+.DS_Store
+
+# OS-specific
+Thumbs.db
