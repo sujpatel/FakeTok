@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
+
 function App() {
 
   const [url, setUrl] = useState("");
@@ -22,6 +23,7 @@ function App() {
         throw new Error(`HTTP Error, status: ${response.status}`);
       }
       const result = await response.json();
+      console.log(result);
       setData(result);
       setUrl("");
     } catch (error) {
