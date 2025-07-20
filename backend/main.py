@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from yt_dlp import YoutubeDL
 import os
 import subprocess
+import whisper
 
 app = FastAPI()
 
@@ -52,12 +53,18 @@ async def analyze_url(data: UrlInput):
     audio_path = f"downloads/{video_id}.mp3"
     extract_audio(path, audio_path)
     
+    model = whisper.load_model("base")
+    result = model.transcribe(audio_path)
+    
     return {
         "status": "success", 
         "video_id": video_id,
         "file_path": path,
-        "audio_file": audio_path
+        "audio_file": audio_path,
+        "transcription": result["text"]
         }
+
+
 
 
 
