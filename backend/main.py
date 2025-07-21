@@ -5,6 +5,14 @@ from yt_dlp import YoutubeDL
 import os
 import subprocess
 import whisper
+import requests
+from dotenv import load_dotenv
+import time
+
+load_dotenv()
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GOOGLE_FACTCHECK_API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")
 
 app = FastAPI()
 
@@ -43,13 +51,14 @@ def extract_audio(video_path, output_audio_path):
     ]
     subprocess.run(command, check=True)
     
-def call_qwen(messages, temperature=0.2):
+def call_kimi(messages, temperature=0.2):
+    time.sleep(2)
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
     data = {
-        "model": "qwen/qwen2.5-vl-72b-instruct:free",
+        "model": "moonshotai/kimi-k2:free",
         "messages": messages,
         "temperature": temperature
     }
@@ -62,7 +71,7 @@ def classify_transcript_as_music_or_speech(transcript):
         {
             "role": "user",
             "content": f"""
-            Classify the folowing transcript as either "music" or "speech".
+            Classify the following transcript as either "music" or "speech".
             
             Transcript: \"\"\"{transcript}\"\"\"
             
@@ -70,7 +79,7 @@ def classify_transcript_as_music_or_speech(transcript):
             """
         }
     ]
-    return call_qwen(messages).lower()
+    return call_kimi(messages).lower()
 
 def detect_false_claims(transcript):
     messages = [
@@ -85,7 +94,7 @@ def detect_false_claims(transcript):
             """
         }
     ]
-    return call_qwen(messages)
+    return call_kimi(messages)
 
 def get_sources_for_claim(claim):
     results = []
@@ -99,7 +108,7 @@ def get_sources_for_claim(claim):
                 "url": claim.get("claimReview", [{}])[0].get("url", ""),
                 "source": "Google Fact Check"
             })
-    scholar_url = f"https://api.semanticsscholar.org/graph/v1/paper/search?query={claim}&limit=2&fields=title,url"
+    scholar_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={claim}&limit=2&fields=title,url"
     scholar_response = requests.get(scholar_url)
     if scholar_response.status_code == 200:
         for paper in scholar_response.json().get("data", []):
@@ -116,7 +125,7 @@ def generate_grounded_explanation(claim, source_title, source_url):
     
     Debunk this using the source: "{source_title}" at {source_url}. Write a short paragraph (2-3 sentences) explaining why this claim is false. Use an informative tone with a citation.
     """
-    return call_qwen([{"role": "user", "content": prompt}])
+    return call_kimi([{"role": "user", "content": prompt}])
 
 class UrlInput(BaseModel):
     url: str
@@ -128,24 +137,51 @@ async def analyze_url(data: UrlInput):
     audio_path = f"downloads/{video_id}.mp3"
     extract_audio(path, audio_path)
     
-    model = whisper.load_model("medium")
+    model = whisper.load_model("small")
     result = model.transcribe(audio_path)
     transcript = result["text"].strip()
     
     if not transcript or len(transcript.split()) < 5:
         return {"status": "non_verbal", "reason": "Too little spoken content."}
+    
     classification = classify_transcript_as_music_or_speech(transcript)
+    
     if classification == "music":
         return {"status": "music", "reason": "Detected as lyrics or music, not speech"}
+    
     claims_output = detect_false_claims(transcript)
     
+    try:
+        import json
+        claims_list = json.loads(claims_output)
+    except:
+        claims_list = []
+    
+    enriched_claims = []
+    
+    for claim_entry in claims_list:
+        claim_text = claim_entry["claim"]
+        explanation = claim_entry["explanation"]
+        sources = get_sources_for_claim(claim_text)
+        
+        if sources:
+            source = sources[0]
+            grounded_expl = generate_grounded_explanation(claim_text, source["title"], source["url"])
+        else:
+            source = {}
+            grounded_expl = explanation
+        
+        enriched_claims.append({
+            "claim": claim_text,
+            "grounded_explanation": grounded_expl,
+            "source": source
+        })
     
     return {
-        "status": "success", 
+        "status": "speech", 
         "video_id": video_id,
-        "file_path": path,
-        "audio_file": audio_path,
-        "transcription": result["text"]
+        "transcript": transcript,
+        "false_claims": enriched_claims
         }
 
 
