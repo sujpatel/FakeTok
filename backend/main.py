@@ -51,14 +51,14 @@ def extract_audio(video_path, output_audio_path):
     ]
     subprocess.run(command, check=True)
     
-def call_kimi(messages, temperature=0.2):
+def call_mistral(messages, temperature=0.2):
     time.sleep(2)
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
     data = {
-        "model": "moonshotai/kimi-k2:free",
+        "model": "mistralai/mistral-7b-instruct:free",
         "messages": messages,
         "temperature": temperature
     }
@@ -66,35 +66,30 @@ def call_kimi(messages, temperature=0.2):
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"].strip()
 
-def classify_transcript_as_music_or_speech(transcript):
+def classify_and_detect(transcript):
     messages = [
         {
             "role": "user",
             "content": f"""
-            Classify the following transcript as either "music" or "speech".
-            
-            Transcript: \"\"\"{transcript}\"\"\"
-            
-            Only respond with one word: music or speech.
-            """
-        }
-    ]
-    return call_kimi(messages).lower()
+    Classify this transcript as:
 
-def detect_false_claims(transcript):
-    messages = [
-        {
-            "role": "user",
-            "content": f"""
-            You are an expert fact-checker. 
-            Given the following TikTok transcript, identify any false or misleading claims. Return a JSON list of claims and a short explanation for why they may be false. If nothing seems false, return an empty list.
-            
-            Transcript:
-            \"\"\"{transcript}\"\"\"
-            """
-        }
-    ]
-    return call_kimi(messages)
+- "music" (if singing or rapping)
+- "speech_claims" (if it has verifiably false/misleading factual claims)
+- "speech_casual" (if it's just a story, rant, opinion, or joke)
+
+If "speech_claims", return a JSON array like:
+[
+  {"claim": "False claim here", "explanation": "Why it's false"},
+  ...
+]
+
+Transcript:
+\"\"\"{transcript}\"\"\"
+    """
+    }
+        ]
+    return call_mistral(messages)
+
 
 def get_sources_for_claim(claim):
     results = []
@@ -125,7 +120,7 @@ def generate_grounded_explanation(claim, source_title, source_url):
     
     Debunk this using the source: "{source_title}" at {source_url}. Write a short paragraph (2-3 sentences) explaining why this claim is false. Use an informative tone with a citation.
     """
-    return call_kimi([{"role": "user", "content": prompt}])
+    return call_mistral([{"role": "user", "content": prompt}])
 
 class UrlInput(BaseModel):
     url: str
@@ -137,31 +132,36 @@ async def analyze_url(data: UrlInput):
     audio_path = f"downloads/{video_id}.mp3"
     extract_audio(path, audio_path)
     
-    model = whisper.load_model("small")
+    model = whisper.load_model("base")
     result = model.transcribe(audio_path)
     transcript = result["text"].strip()
     
     if not transcript or len(transcript.split()) < 5:
         return {"status": "non_verbal", "reason": "Too little spoken content."}
     
-    classification = classify_transcript_as_music_or_speech(transcript)
+    raw_response = classify_and_detect(transcript)
     
-    if classification == "music":
+    if "music" in raw_response.lower():
         return {"status": "music", "reason": "Detected as lyrics or music, not speech"}
     
-    claims_output = detect_false_claims(transcript)
+    if "speech_casual" in raw_response.lower():
+        return {"status": "speech_non_claim", "reason": "Detected as casual or non-claim speech", "transcript": transcript, "false_claims": []}
     
     try:
         import json
-        claims_list = json.loads(claims_output)
+        claims_list = json.loads(raw_response)
     except:
         claims_list = []
     
     enriched_claims = []
     
-    for claim_entry in claims_list:
+    for claim_entry in claims_list[:5]:
         claim_text = claim_entry["claim"]
         explanation = claim_entry["explanation"]
+        
+        if len(claim_text.split()) < 4:
+            continue
+        
         sources = get_sources_for_claim(claim_text)
         
         if sources:
@@ -176,6 +176,11 @@ async def analyze_url(data: UrlInput):
             "grounded_explanation": grounded_expl,
             "source": source
         })
+    
+    if os.path.exists(path):
+        os.remove(path)
+    if os.path.exists(audio_path):
+        os.remove(audio_path)
     
     return {
         "status": "speech", 
