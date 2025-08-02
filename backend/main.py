@@ -71,21 +71,22 @@ def classify_and_detect(transcript):
         {
             "role": "user",
             "content": f"""
-    Classify this transcript as:
+You're a fact-checking assistant.
 
-- "music" (if singing or rapping)
-- "speech_claims" (if it has verifiably false/misleading factual claims)
-- "speech_casual" (if it's just a story, rant, opinion, or joke)
+Classify the transcript as one of:
+- music
+- speech_claims
+- speech_casual
 
-If "speech_claims", return a JSON array like:
-[
-  {"claim": "False claim here", "explanation": "Why it's false"},
-  ...
-]
+If speech_claims, extract up to 5 false or misleading claims. For each, say why it's wrong.
+
+Return:
+[{{"claim": "...", "explanation": "..."}}]
 
 Transcript:
 \"\"\"{transcript}\"\"\"
-    """
+"""
+
     }
         ]
     return call_mistral(messages)
@@ -93,6 +94,16 @@ Transcript:
 
 def get_sources_for_claim(claim):
     results = []
+    scholar_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={claim}&limit=2&fields=title,url"
+    scholar_response = requests.get(scholar_url)
+    if scholar_response.status_code == 200:
+        for paper in scholar_response.json().get("data", []):
+            results.append({
+                "title": paper["title"],
+                "url": paper["url"],
+                "source": "Semantic Scholar"
+            })
+            
     fact_check_url = f"https://factchecktools.googleapis.com/v1alpha1/claims:search?query={claim}&key={GOOGLE_FACTCHECK_API_KEY}"
     fact_response  = requests.get(fact_check_url)
     if fact_response.status_code == 200:
@@ -103,15 +114,7 @@ def get_sources_for_claim(claim):
                 "url": claim.get("claimReview", [{}])[0].get("url", ""),
                 "source": "Google Fact Check"
             })
-    scholar_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={claim}&limit=2&fields=title,url"
-    scholar_response = requests.get(scholar_url)
-    if scholar_response.status_code == 200:
-        for paper in scholar_response.json().get("data", []):
-            results.append({
-                "title": paper["title"],
-                "url": paper["url"],
-                "source": "Semantic Scholar"
-            })
+   
     return results 
 
 def generate_grounded_explanation(claim, source_title, source_url):
@@ -127,67 +130,84 @@ class UrlInput(BaseModel):
 
 @app.post("/analyze")
 async def analyze_url(data: UrlInput):
-    video_id, path = download_tiktok_video(data.url)
-    
-    audio_path = f"downloads/{video_id}.mp3"
-    extract_audio(path, audio_path)
-    
-    model = whisper.load_model("base")
-    result = model.transcribe(audio_path)
-    transcript = result["text"].strip()
-    
-    if not transcript or len(transcript.split()) < 5:
-        return {"status": "non_verbal", "reason": "Too little spoken content."}
-    
-    raw_response = classify_and_detect(transcript)
-    
-    if "music" in raw_response.lower():
-        return {"status": "music", "reason": "Detected as lyrics or music, not speech"}
-    
-    if "speech_casual" in raw_response.lower():
-        return {"status": "speech_non_claim", "reason": "Detected as casual or non-claim speech", "transcript": transcript, "false_claims": []}
+    start_time = time.time()
+    video_id = None
+    path = None
+    audio_path = None
     
     try:
-        import json
-        claims_list = json.loads(raw_response)
-    except:
-        claims_list = []
+        video_id, path = download_tiktok_video(data.url)
     
-    enriched_claims = []
+        audio_path = f"downloads/{video_id}.mp3"
+        extract_audio(path, audio_path)
     
-    for claim_entry in claims_list[:5]:
-        claim_text = claim_entry["claim"]
-        explanation = claim_entry["explanation"]
-        
-        if len(claim_text.split()) < 4:
-            continue
-        
-        sources = get_sources_for_claim(claim_text)
-        
-        if sources:
-            source = sources[0]
-            grounded_expl = generate_grounded_explanation(claim_text, source["title"], source["url"])
-        else:
-            source = {}
-            grounded_expl = explanation
-        
-        enriched_claims.append({
-            "claim": claim_text,
-            "grounded_explanation": grounded_expl,
-            "source": source
-        })
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path)
+        transcript = result["text"].strip()
     
-    if os.path.exists(path):
-        os.remove(path)
-    if os.path.exists(audio_path):
-        os.remove(audio_path)
+        if not transcript or len(transcript.split()) < 5:
+            end_time = time.time()
+            duration = round(end_time - start_time, 2)
+            return {"status": "non_verbal", "reason": "Too little spoken content.", "processing_time": duration}
     
-    return {
-        "status": "speech", 
-        "video_id": video_id,
-        "transcript": transcript,
-        "false_claims": enriched_claims
-        }
+        raw_response = classify_and_detect(transcript)
+    
+        if "music" in raw_response.lower():
+            return {"status": "music", "reason": "Detected as lyrics or music, not speech"}
+    
+        if "speech_casual" in raw_response.lower():
+            return {"status": "speech_non_claim", "reason": "Detected as casual or non-claim speech", "transcript": transcript, "false_claims": []}
+    
+        try:
+            import json
+            claims_list = json.loads(raw_response)
+        except:
+            claims_list = []
+    
+        enriched_claims = []
+    
+        for claim_entry in claims_list[:5]:
+            claim_text = claim_entry["claim"]
+            explanation = claim_entry["explanation"]
+        
+            if len(claim_text.split()) < 4:
+                continue
+        
+            sources = get_sources_for_claim(claim_text)
+        
+            if sources:
+                source = sources[0]
+                grounded_expl = generate_grounded_explanation(claim_text, source["title"], source["url"])
+            else:
+                source = {}
+                grounded_expl = explanation
+        
+            enriched_claims.append({
+                "claim": claim_text,
+                "grounded_explanation": grounded_expl,
+                "source": source
+            })
+    
+        if os.path.exists(path):
+            os.remove(path)
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        
+        end_time = time.time()
+        duration = round(end_time - start_time, 2)
+    
+        return {
+            "status": "speech", 
+            "video_id": video_id,
+            "transcript": transcript,
+            "false_claims": enriched_claims,
+            "processing_time": duration
+            }
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
 
 
 

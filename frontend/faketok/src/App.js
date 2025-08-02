@@ -5,9 +5,16 @@ function App() {
 
   const [url, setUrl] = useState("");
   const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!url.trim()) {
+      alert("Please enter a TikTok URL.");
+      return;
+    }
+    setLoading(true);
 
     try {
       const response = await fetch("http://localhost:8000/analyze", {
@@ -25,17 +32,25 @@ function App() {
       const result = await response.json();
       console.log(result);
       setData(result);
+      console.log("Processing time:", result.processing_time ?? "N/A");
       setUrl("");
     } catch (error) {
       console.error("Error during fetch:", error);
+    } finally {
+      setLoading(false);
     }
+
 
 
 
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center text-white">
+    <div className="min-h-screen flex flex-col items-center justify-center text-white">
+      <div className="text-center mt-12">
+        <h1 className="text-4xl font-bold text-[#EE1D52] mb-2">Welcome to FakeTok</h1>
+        <p className="text-lg text-zinc-400">Turning TikTok videos into verified truth.</p>
+      </div>
       {!data ? (
         <form
           onSubmit={handleSubmit} className="flex flex-col items-center gap-4 mt-16 px-4">
@@ -48,13 +63,16 @@ function App() {
           </input>
           <button
             type="submit"
-            className="px-6 py-3 font-semibold text-white bg-[#EE1D52] hover:bg-[#d81a4b] rounded-xl transition">Analyze</button>
+            disabled={loading}
+            className={`px-6 py-3 font-semibold text-white rounded-xl transition ${loading ? "bg-[#d81a4b] opacity-60 cursor-not-allowed" : "bg-[#EE1D52] hover:bg-[#d81a4b]"}`}>{loading ? "Analyzing..." : "Analyze"}</button>
         </form>
       ) : (
         <div className="w-full max-w-3xl space-y-6">
           <h2 className="text-2xl font-bold text-[#69C9D0]">Transcript</h2>
           <div className="text-lg leading-relaxed flex flex-wrap gap-1">
-            {renderAnnotatedTranscript(data.transcript, data.false_claims)}
+            {data.transcript
+              ?
+              renderAnnotatedTranscript(data.transcript, data.false_claims) : <p className="text-zinc-400 italic">{data.reason}</p>}
           </div>
 
           <button onClick={() => setData(null)}
@@ -69,46 +87,49 @@ function App() {
 }
 
 function renderAnnotatedTranscript(transcript, claims) {
-  if (!claims || claims.length === 0) return transcript;
+  return (
+    <div className="space-y-6">
 
-  const fragments = [];
-  let current = transcript;
+      <div className="whitespace-pre-wrap">{transcript}</div>
+      {claims && claims.length > 0 && (
+        <details className="bg-zinc-800 rounded-xl p-4 border border-zinc-700">
+          <summary className="cursor-pointer text-[#EE1D52] font-semibold text-lg">
+            False Claims Detected ({claims.length})
+          </summary>
+          <ul className="mt-4 space-y-4">
+            {claims.map((claimObj, idx) => (
+              <li
+                key={idx}
+                className="bg-zinc-900 p-4 rounded-lg border border-zinc-700">
+                <div className="text-red-400 font-semibold mb-1">
+                  🔴 Claim {idx + 1}:
+                </div>
+                <div className="text-white mb-2">
+                  <span className="italic">"{claimObj.claim}"</span>
+                </div>
+                <div className="text-zinc-300">{claimObj.grounded_explanation}</div>
 
-  claims.forEach(({ claim, grounded_explanation, source }) => {
-    const index = current.toLowerCase().indexOf(claim.toLowerCase());
-    if (index === -1) return;
-
-    const before = current.slice(0, index);
-    const match = current.slice(index, index + claim.length);
-    const after = current.slice(index + claim.length);
-
-    if (before) fragments.push(before);
-
-    fragments.push(
-      <span
-        key={match + Math.random()}
-        className="underline decoration-[#EE1D52] decoration-2 cursor-pointer group relative">
-        {match}
-        <span className="absolute left-0 top-full mt-1 z-10 hidden group-hover:block bg-zinc-800 text-sm text-white p-2 rounded-lg w-72 shadow-xl">
-          {grounded_explanation}
-          {source?.url && (
-            <div className="mt-2">
-              <a
-                href={source.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#69C9D0] underline"
-              >
-                Source: {source.title}
-              </a>
-            </div>
-          )}
-        </span>
-      </span>
-    );
-    current = after;
-  });
-  if (current) fragments.push(current);
-  return fragments;
+                <div className="mt-2">
+                  {claimObj.source?.url ? (
+                    <a
+                      href={claimObj.source.url}
+                      target="_blank"
+                      rel="npopener noreferrer"
+                      className="text-[#69C9D0] underline hover:text-[#69C9D0]/80"
+                    >
+                      📚 Source: {claimObj.source.title || "View Source"}
+                    </a>
+                  ) : (
+                    <p className="text-zinc-500 italic">No source found - LLM Generated explanation</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
 }
+
 export default App;
