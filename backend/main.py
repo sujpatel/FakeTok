@@ -19,6 +19,7 @@ app = FastAPI()
 origins = [
     
     "http://localhost:3000"
+    "https://faketok-frontend.onrender.com"
 ]
 
 app.add_middleware(
