@@ -17,7 +17,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch("https://faketok.onrender.com/analyze", {
+      const response = await fetch("http://localhost:8000/analyze", {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
