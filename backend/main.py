@@ -19,7 +19,6 @@ app = FastAPI()
 origins = [
     
     "http://localhost:3000",
-    "https://faketok-frontend.onrender.com"
 ]
 
 app.add_middleware(
@@ -72,17 +71,18 @@ def classify_and_detect(transcript):
         {
             "role": "user",
             "content": f"""
-You're a fact-checking assistant.
+You're a fact-checking assistant. Analyze this transcript and extract up to 5 claims that could be fact-checked.
 
-Classify the transcript as one of:
-- music
-- speech_claims
-- speech_casual
+For each claim, provide:
+- The specific claim being made
+- An explanation of why it might be false, misleading, or unverifiable
 
-If speech_claims, extract up to 5 false or misleading claims. For each, say why it's wrong.
+If the content is music, casual conversation, or unclear, still try to extract any factual claims that could be verified.
 
-Return:
-[{{"claim": "...", "explanation": "..."}}]
+If something is unidentifiable or unclear, state that in the explanation.
+
+Always return exactly this format with up to 5 claims:
+[{{"claim": "specific claim text", "explanation": "why this might be false/unverifiable/unclear"}}]
 
 Transcript:
 \"\"\"{transcript}\"\"\"
@@ -152,42 +152,55 @@ async def analyze_url(data: UrlInput):
             return {"status": "non_verbal", "reason": "Too little spoken content.", "processing_time": duration}
     
         raw_response = classify_and_detect(transcript)
-    
-        if "music" in raw_response.lower():
-            return {"status": "music", "reason": "Detected as lyrics or music, not speech"}
-    
-        if "speech_casual" in raw_response.lower():
-            return {"status": "speech_non_claim", "reason": "Detected as casual or non-claim speech", "transcript": transcript, "false_claims": []}
+        print(f"Raw AI response: {raw_response}")  # Debug logging
     
         try:
             import json
             claims_list = json.loads(raw_response)
-        except:
-            claims_list = []
+            print(f"Parsed claims: {claims_list}")  # Debug logging
+        except Exception as e:
+            print(f"JSON parsing failed: {e}")  # Debug logging
+            # If JSON parsing fails, create a single claim indicating the content was unidentifiable
+            claims_list = [{"claim": "Content analysis failed", "explanation": "Unable to parse or identify specific claims from this content"}]
     
         enriched_claims = []
     
         for claim_entry in claims_list[:5]:
-            claim_text = claim_entry["claim"]
-            explanation = claim_entry["explanation"]
-        
-            if len(claim_text.split()) < 4:
+            try:
+                claim_text = claim_entry.get("claim", "").strip()
+                explanation = claim_entry.get("explanation", "").strip()
+            
+                # Only skip if claim is extremely short (less than 2 words) or empty
+                if len(claim_text.split()) < 2 or not claim_text:
+                    print(f"Skipping very short claim: '{claim_text}'")  # Debug logging
+                    continue
+            
+                sources = get_sources_for_claim(claim_text)
+            
+                if sources:
+                    source = sources[0]
+                    grounded_expl = generate_grounded_explanation(claim_text, source["title"], source["url"])
+                else:
+                    source = {}
+                    grounded_expl = explanation
+            
+                enriched_claims.append({
+                    "claim": claim_text,
+                    "grounded_explanation": grounded_expl,
+                    "source": source
+                })
+            except Exception as e:
+                print(f"Error processing claim: {e}")  # Debug logging
                 continue
         
-            sources = get_sources_for_claim(claim_text)
-        
-            if sources:
-                source = sources[0]
-                grounded_expl = generate_grounded_explanation(claim_text, source["title"], source["url"])
-            else:
-                source = {}
-                grounded_expl = explanation
-        
-            enriched_claims.append({
-                "claim": claim_text,
-                "grounded_explanation": grounded_expl,
-                "source": source
-            })
+        # If no claims were processed, add a fallback claim
+        if not enriched_claims:
+            print("No valid claims found, adding fallback claim")  # Debug logging
+            enriched_claims = [{
+                "claim": "Content analysis inconclusive",
+                "grounded_explanation": "Unable to identify specific factual claims in this content. The transcript may contain unclear speech, music, or non-factual content.",
+                "source": {}
+            }]
     
         if os.path.exists(path):
             os.remove(path)
@@ -198,7 +211,7 @@ async def analyze_url(data: UrlInput):
         duration = round(end_time - start_time, 2)
     
         return {
-            "status": "speech", 
+            "status": "analyzed", 
             "video_id": video_id,
             "transcript": transcript,
             "false_claims": enriched_claims,
